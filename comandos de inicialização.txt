@@ -1,0 +1,8 @@
+# 1. Garanta que está no diretório do projeto real
+cd ~/laboratorio_bioinfo/projetos_miseq_real
+
+# 2. Ative o ambiente conda
+conda activate bioinfo_vc
+
+# 3. Dispare o orquestrador chamando o caminho dele
+python3 ../scripts_bioinfo/orquestrador.py
