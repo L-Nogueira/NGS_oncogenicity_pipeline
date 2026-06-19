@@ -6,7 +6,7 @@ import sys
 def rodar_mutect2_smart_target(id_amostra, referencia, bam_entrada, arquivo_bed, pasta_saida):
     """
     Roda a chamada de variantes somáticas Tumor-Only usando o GATK Mutect2
-    restringindo o processamento às regiões do arquivo BED (Smart Target).
+    restringindo o processamento às regiões do arquivo BED padronizado (Smart Target).
     """
     os.makedirs(pasta_saida, exist_ok=True)
     
@@ -16,13 +16,28 @@ def rodar_mutect2_smart_target(id_amostra, referencia, bam_entrada, arquivo_bed,
     
     print(f"🧬 [Mutect2] Iniciando chamada de variantes somáticas para: {id_amostra}")
     
-    # Protegido com aspas simples caso haja espaços em branco nos caminhos do laboratório
+    # ------------------------------------------------------------------
+    # CORREÇÃO: Buscar o arquivo BED temporário corrigido (sem 'chr') gerado no alinhamento
+    # Isso evita incompatibilidade de cromossomos e lida com o espaço na pasta
+    # ------------------------------------------------------------------
+    diretorio_bed = os.path.dirname(arquivo_bed)
+    bed_corrigido = os.path.join(diretorio_bed, "targeted_regions_FIXED.bed")
+    
+    # Se o alinhamento já limpou ou não gerou o FIXED, usamos um fallback seguro
+    if os.path.exists(bed_corrigido):
+        bed_alvo = bed_corrigido
+        print(f"🎯 Usando arquivo BED padronizado para o GATK: {os.path.basename(bed_alvo)}")
+    else:
+        bed_alvo = arquivo_bed
+        print(f"⚠️ Aviso: Arquivo BED modificado não encontrado. Usando o original.")
+
+    # Comando protegido por aspas duplas \" para caminhos com espaços no sistema de arquivos
     cmd_mutect = (
         f"gatk Mutect2 "
-        f"-R '{referencia}' "
-        f"-I '{bam_entrada}' "
-        f"-L '{arquivo_bed}' "
-        f"-O '{vcf_bruto}'"
+        f"-R \"{referencia}\" "
+        f"-I \"{bam_entrada}\" "
+        f"-L \"{bed_alvo}\" "
+        f"-O \"{vcf_bruto}\""
     )
     
     print(f"🏃‍♂️ Executando Passo 1/2 (Mutect2)...")
@@ -35,9 +50,9 @@ def rodar_mutect2_smart_target(id_amostra, referencia, bam_entrada, arquivo_bed,
 
     cmd_filter = (
         f"gatk FilterMutectCalls "
-        f"-R '{referencia}' "
-        f"-V '{vcf_bruto}' "
-        f"-O '{vcf_filtrado}'"
+        f"-R \"{referencia}\" "
+        f"-V \"{vcf_bruto}\" "
+        f"-O \"{vcf_filtrado}\""
     )
     
     print(f"🧹 Executando Passo 2/2 (FilterMutectCalls)...")
@@ -53,12 +68,4 @@ def rodar_mutect2_smart_target(id_amostra, referencia, bam_entrada, arquivo_bed,
         if os.path.exists(arquivo_temp):
             os.remove(arquivo_temp)
             
-    print(f"✅ Amostra {id_amostra} concluída com sucesso com perfil somático!")
     return True
-
-if __name__ == "__main__":
-    if len(sys.argv) < 6:
-        print("Uso: python3 variantes_mutect2.py <ID> <REF.fa> <INPUT.bam> <PAINEL.bed> <OUT_DIR>")
-        sys.exit(1)
-        
-    rodar_mutect2_smart_target(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
