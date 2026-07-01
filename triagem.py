@@ -56,3 +56,4 @@ if __name__ == "__main__":
         pipeline_par(sys.argv[1], sys.argv[2])
     else:
         print("Uso: python3 triagem.py amostra_R1.fastq.gz amostra_R2.fastq.gz")
+
