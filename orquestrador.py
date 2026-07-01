@@ -60,64 +60,105 @@ if __name__ == "__main__":
     print("🧬 INICIANDO PIPELINE AUTOMATIZADO DE BIOINFORMÁTICA (MiSeq Real) 🧬")
     print("======================================================================")
 
-    # Coleta de arquivos R1 de forma robusta
-    arquivos_r1 = sorted(glob.glob(os.path.join(PASTA_BRUTOS, "*_R1_*.fastq.gz")))
+    # Criar pastas essenciais caso não existam
+    os.makedirs(PASTA_VARIANTES, exist_ok=True)
+    os.makedirs(PASTA_ANOTACAO, exist_ok=True)
 
-    if not arquivos_r1:
-        print(f"❌ Erro: Nenhum arquivo pareado R1 encontrado na pasta '{PASTA_BRUTOS}'.")
+# Identificar todas as amostras possíveis combinando FastQs existentes E VCFs já presentes
+    vcf_mutect_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*_variants.vcf"))
+    vcf_dragen_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*.hard-filtered.vcf"))
+    arquivos_r1 = glob.glob(os.path.join(PASTA_BRUTOS, "*_R1_*.fastq.gz"))
+    
+    # Conjunto de IDs únicos encontrados no sistema
+    ids_amostras = set()
+    
+    for vcf_path in vcf_mutect_lista:
+        id_vcf = os.path.basename(vcf_path).replace("_variants.vcf", "")
+        ids_amostras.add(id_vcf)
+        
+    for vcf_path in vcf_dragen_lista:
+        id_vcf = os.path.basename(vcf_path).replace(".hard-filtered.vcf", "")
+        ids_amostras.add(id_vcf)
+        
+    for r1_path in arquivos_r1:
+        ids_amostras.add(obter_id_amostra(r1_path))
+        
+    ids_amostras = sorted(list(ids_amostras))
+
+    if not ids_amostras:
+        print(f"❌ Erro: Nenhum FastQ em '{PASTA_BRUTOS}' ou VCF em '{PASTA_VARIANTES}' localizado.")
         sys.exit(1)
 
-    print(f"📦 Total de amostras identificadas para processamento: {len(arquivos_r1)}")
+    print(f"📦 Total de amostras identificadas para processamento: {len(ids_amostras)}")
 
-    for r1 in arquivos_r1:
+    for id_amostra in ids_amostras:
         tempo_inicio_amostra = time.time()
         
-        # Identificar par R2 correspondente mudando estritamente a ocorrência de _R1_ para _R2_
-        r2 = r1.replace("_R1_", "_R2_")
-        if not os.path.exists(r2):
-            print(f"⚠️ Alerta: O par R2 para o arquivo {r1} não foi localizado. Pulando amostra.")
-            continue
-
-        id_amostra = obter_id_amostra(r1)
-        print(f"\n{'-'*80}")
+        print("\n" + "-"*80)
         print(f"🔬 PROCESSANDO AMOSTRA: {id_amostra}")
         print(f"{'-'*80}")
 
-        # --- PASSO 1: Triagem de Integridade e FastQC Inicial (Com SKIP inteligente) ---
-        # Define um arquivo alvo gerado pelo FastQC para servir de marcador de sucesso
-        fastqc_html_marcador = os.path.join("fastqc_results", f"{os.path.basename(r1).replace('.fastq.gz', '_fastqc.html')}")
+# Definir caminhos possíveis para os arquivos VCF desta amostra
+        vcf_mutect2 = os.path.join(PASTA_VARIANTES, f"{id_amostra}_variants.vcf")
+        vcf_dragen = os.path.join(PASTA_VARIANTES, f"{id_amostra}.hard-filtered.vcf")
         
-        if not os.path.exists(fastqc_html_marcador):
-            print(f"📊 [PASSO 1] Executando triagem e controle de qualidade inicial...")
-            triagem.pipeline_par(r1, r2)
+        # Atribuição dinâmica do VCF de entrada real baseado no que existir na pasta
+        if os.path.exists(vcf_mutect2):
+            vcf_entrada_real = vcf_mutect2
+        elif os.path.exists(vcf_dragen):
+            vcf_entrada_real = vcf_dragen
         else:
-            print(f"⏩ [SKIP] Passo 1 (Triagem/FastQC) já executado para {id_amostra}.")
+            vcf_entrada_real = vcf_mutect2 # Fallback padrão caso venha dos FastQs e vá rodar o Mutect2
 
-        # --- PASSO 2: Limpeza de Adaptadores (Trimmomatic) (Com SKIP Inteligente) ---
-        r1_trim = os.path.join("trimmed_data", os.path.basename(r1).replace(".fastq.gz", "_trim_P.fastq.gz"))
-        r2_trim = os.path.join("trimmed_data", os.path.basename(r2).replace(".fastq.gz", "_trim_P.fastq.gz"))
-
-        if not os.path.exists(r1_trim) or not os.path.exists(r2_trim):
-            print(f"✂️ [PASSO 2] Executando Trimmomatic para remoção de adaptadores...")
-            limpeza.realizar_limpeza(r1, r2)
+        # DEFINIÇÃO DE MODO: Se algum dos dois VCFs já existe, podemos pular as etapas de upstream
+        if os.path.exists(vcf_mutect2) or os.path.exists(vcf_dragen):
+            print(f"ℹ️  Modo VCF Direto detectado para {id_amostra} ({os.path.basename(vcf_entrada_real)} encontrado).")
+            print(f"⏩ [SKIP] Passos 1 a 4 ignorados automaticamente.")
         else:
-            print(f"⏩ [SKIP] Arquivos limpos (Trimmomatic) já localizados para {id_amostra}.")
+            print(f"ℹ️  Modo FastQ Tradicional detectado para {id_amostra}.")
+            
+            # Localizar os arquivos FastQ correspondentes à amostra
+            padrao_r1 = os.path.join(PASTA_BRUTOS, f"{id_amostra}_R1_*.fastq.gz")
+            busca_r1 = glob.glob(padrao_r1)
+            
+            if not busca_r1:
+                print(f"⚠️ Alerta: FastQ R1 não encontrado para a amostra {id_amostra} na pasta '{PASTA_BRUTOS}'. Pulando.")
+                continue
+                
+            r1 = sorted(busca_r1)[0]
+            r2 = r1.replace("_R1_", "_R2_")
+            
+            if not os.path.exists(r2):
+                print(f"⚠️ Alerta: O par R2 para o arquivo {r1} não foi localizado. Pulando amostra.")
+                continue
 
-        # --- PASSO 3: Alinhamento, Indexação e Mosdepth (Com SKIP Inteligente) ---
-        # IMPORTANTE: Daqui para frente usamos r1_trim e r2_trim!
-        bam_gerado = os.path.join("alignment_results", f"{id_amostra}_sorted.bam")
-        
-        if not os.path.exists(bam_gerado):
-            print(f"🧬 [PASSO 3] Executando Alinhamento (BWA-MEM) e Mosdepth...")
-            # Corrigido internamente em alinhamento.py com \\t
-            alinhamento.realizar_alinhamento(r1_trim, r2_trim, REFERENCIA)
-        else:
-            print(f"⏩ [SKIP] Arquivo BAM alinhado e indexado já localizado para {id_amostra}.")
+            # --- PASSO 1: Triagem de Integridade e FastQC Inicial ---
+            fastqc_html_marcador = os.path.join("fastqc_results", f"{os.path.basename(r1).replace('.fastq.gz', '_fastqc.html')}")
+            if not os.path.exists(fastqc_html_marcador):
+                print(f"📊 [PASSO 1] Executando triagem e controle de qualidade inicial...")
+                triagem.pipeline_par(r1, r2)
+            else:
+                print(f"⏩ [SKIP] Passo 1 (Triagem/FastQC) já executado para {id_amostra}.")
 
-        # --- PASSO 4: Chamada de Variantes Somáticas (Mutect2) (Com SKIP Inteligente) ---
-        vcf_gerado = os.path.join(PASTA_VARIANTES, f"{id_amostra}_variants.vcf")
-        
-        if not os.path.exists(vcf_gerado):
+            # --- PASSO 2: Limpeza de Adaptadores (Trimmomatic) ---
+            r1_trim = os.path.join("trimmed_data", os.path.basename(r1).replace(".fastq.gz", "_trim_P.fastq.gz"))
+            r2_trim = os.path.join("trimmed_data", os.path.basename(r2).replace(".fastq.gz", "_trim_P.fastq.gz"))
+
+            if not os.path.exists(r1_trim) or not os.path.exists(r2_trim):
+                print(f"✂️ [PASSO 2] Executando Trimmomatic para remoção de adaptadores...")
+                limpeza.realizar_limpeza(r1, r2)
+            else:
+                print(f"⏩ [SKIP] Arquivos limpos (Trimmomatic) já localizados para {id_amostra}.")
+
+            # --- PASSO 3: Alinhamento, Indexação e Mosdepth ---
+            bam_gerado = os.path.join("alignment_results", f"{id_amostra}_sorted.bam")
+            if not os.path.exists(bam_gerado):
+                print(f"🧬 [PASSO 3] Executando Alinhamento (BWA-MEM) e Mosdepth...")
+                alinhamento.realizar_alinhamento(r1_trim, r2_trim, REFERENCIA)
+            else:
+                print(f"⏩ [SKIP] Arquivo BAM alinhado e indexado já localizado para {id_amostra}.")
+
+            # --- PASSO 4: Chamada de Variantes Somáticas (Mutect2) ---
             print(f"🎯 [PASSO 4] Iniciando chamada de variantes com GATK Mutect2...")
             variantes_mutect2.rodar_mutect2_smart_target(
                 id_amostra=id_amostra,
@@ -126,17 +167,16 @@ if __name__ == "__main__":
                 arquivo_bed=ARQUIVO_BED,
                 pasta_saida=PASTA_VARIANTES
             )
-        else:
-            print(f"⏩ [SKIP] Chamada de variantes (VCF) já localizada para {id_amostra}.")
 
-        # --- PASSO 5: ANNOVAR + CancerVar (Com SKIP Inteligente) ---
+# --- PASSO 5: ANNOVAR + CancerVar (Comum para ambos os modos) ---
         cancervar_final_txt = os.path.join(PASTA_ANOTACAO, f"{id_amostra}_cancervar.output.hg38_multianno.txt.cancervar")
         
         if not os.path.exists(cancervar_final_txt):
             print(f"🏷️ [PASSO 5] Iniciando anotação e predição ANNOVAR + CancerVar...")
+            print(f"🔍 Usando como entrada: {os.path.basename(vcf_entrada_real)}")
             anotacao_variantes.rodar_anotacao(
                 id_amostra=id_amostra,
-                vcf_entrada=vcf_gerado,
+                vcf_entrada=vcf_entrada_real,  # Mudança crucial aqui!
                 pasta_saida=PASTA_ANOTACAO,
                 cancervar_py=CANCERVAR_PY,
                 cancervar_config=CANCERVAR_CONFIG
