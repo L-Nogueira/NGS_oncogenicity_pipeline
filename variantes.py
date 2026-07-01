@@ -77,3 +77,4 @@ if __name__ == "__main__":
     ref_in = sys.argv[3]
     
     realizar_variant_calling(bam_in, bed_in, ref_in)
+
