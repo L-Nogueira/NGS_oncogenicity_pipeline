@@ -28,7 +28,7 @@ def rodar_anotacao(id_amostra, vcf_entrada, pasta_saida, cancervar_py, cancervar
     cmd_annovar = (
         f"perl {TABLE_ANNOVAR} {os.path.abspath(vcf_entrada)} {HUMANDB} "
         f"-buildver hg38 -outfile {prefixo_saida} -remove "
-        f"-protocol refGene,clinvar_20240917 -operation g,f "
+        f"-protocol refGene,clinvar_20240917,cosmic91 -operation g,f,f "
         f"-nastring . -vcfinput"
     )
 
