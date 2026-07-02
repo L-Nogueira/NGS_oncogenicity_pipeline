@@ -5,7 +5,7 @@ import re
 import glob
 
 def extrair_hgvs(row, coluna_fonte):
-    """Função auxiliar para extrair cDNA (c.) e Proteína (p.) da string do ANNOVAR."""
+    """Extrai cDNA (c.) e Proteína (p.) apenas do primeiro transcrito (canônico)."""
     val = str(row.get(coluna_fonte, ''))
     if not val or val == '.' or val == 'nan':
         return '.', '.'
@@ -24,18 +24,18 @@ def extrair_hgvs(row, coluna_fonte):
         
     return c_dot, p_dot
 
-def extrair_vaf_e_depth(row):
+def extrair_vaf_e_depth_original(row_annovar):
     """
-    Varre cirurgicamente as colunas nominais de 'Otherinfo' geradas pelo ANNOVAR/CancerVar.
-    Localiza onde está a chave 'GT:' e pareia com a coluna de valores subsequente.
+    Sua função original que funciona perfeitamente:
+    Varre cirurgicamente as colunas nominais de 'Otherinfo' do arquivo do ANNOVAR.
     """
     formato = ""
     valores = ""
     
     # 1. Identifica quais colunas do DataFrame começam com 'Otherinfo'
-    colunas_otherinfo = [c for c in row.index if str(c).startswith('Otherinfo')]
+    colunas_otherinfo = [c for c in row_annovar.index if str(c).startswith('Otherinfo')]
     
-    # Ordena as colunas numericamente (Otherinfo1, Otherinfo2... Otherinfo10, Otherinfo11)
+    # Ordena as colunas numericamente (Otherinfo1, Otherinfo2...)
     def extrair_numero(nome_col):
         num = re.findall(r'\d+', nome_col)
         return int(num[0]) if num else 0
@@ -43,168 +43,226 @@ def extrair_vaf_e_depth(row):
     
     # 2. Procura pela coluna que dita o formato (contém 'GT:')
     for idx, col in enumerate(colunas_otherinfo):
-        conteudo = str(row[col]).strip()
+        conteudo = str(row_annovar[col]).strip()
         if conteudo.startswith("GT:") or ":GT:" in conteudo or conteudo == "GT":
             formato = conteudo
-            # No padrão do CancerVar, os valores numéricos estão estritamente na coluna Otherinfo seguinte
             if idx + 1 < len(colunas_otherinfo):
-                valores = str(row[colunas_otherinfo[idx + 1]]).strip()
+                valores = str(row_annovar[colunas_otherinfo[idx + 1]]).strip()
             break
             
-    # Se falhar no mapeamento básico por nome de coluna, faz o fallback linear por conteúdo da linha
+    # Fallback linear por conteúdo da linha
     if not formato:
-        valores_linha = [str(x).strip() for x in row.values]
+        valores_linha = [str(x).strip() for x in row_annovar.values]
         for i, celula in enumerate(valores_linha):
-            if celula.startswith("GT:") or celula == "GT":
+            if celula.startswith("GT:") or celula == "GT" or ":GT:" in celula:
                 formato = celula
                 if i + 1 < len(valores_linha):
                     valores = valores_linha[i + 1]
                 break
 
-    # Se não localizou a estrutura clássica de VCF, retorna ponto de segurança
-    if not formato or not valores or valores == '.' or valores == 'nan':
+    if not formato or not valores or valores in ['.', 'nan']:
         return '.', '.'
         
     chaves = formato.split(':')
     dados = valores.split(':')
-    
-    # Cria o dicionário pareando chave-valor por posição
     mapa = {chave: dados[i] for i, chave in enumerate(chaves) if i < len(dados)}
     
     dp = '.'
     vaf = '.'
     
-    # 3. Extração precisa da Cobertura Total (DP)
+    # Extração da Cobertura Total (DP)
     if 'DP' in mapa and mapa['DP'] != '.':
         dp = mapa['DP']
     elif 'AD' in mapa and mapa['AD'] != '.':
         try:
-            # Fallback caso o DP não esteja explícito: soma reads de Ref + Alt
             reads = [int(x) for x in mapa['AD'].split(',')]
             dp = str(sum(reads))
         except:
             pass
             
-    # 4. Extração precisa da Frequência Alélica / VAF (AF ou VF)
+    # Extração da Frequência Alélica / VAF
     coluna_af = 'AF' if 'AF' in mapa else ('VF' if 'VF' in mapa else None)
     if coluna_af and mapa[coluna_af] != '.':
         try:
-            # Pega o primeiro valor (tratando possíveis multialélicos separados por vírgula)
             vaf_crua = mapa[coluna_af].split(',')[0]
             val_af = float(vaf_crua)
-            
-            # Correção matemática para interpretar frequências como 1.0000 ou 0.2500 corretamente
             if val_af <= 1.0:
                 vaf = f"{val_af * 100:.2f}%"
             else:
-                # Caso o variant caller já envie em escala de 0-100 (ex: 25.4)
                 vaf = f"{val_af:.2f}%"
         except:
             vaf = mapa[coluna_af]
+    elif 'AD' in mapa and mapa['AD'] != '.':
+        try:
+            ad_valores = mapa['AD'].split(',')
+            if len(ad_valores) >= 2:
+                ref_count = float(ad_valores[0])
+                alt_count = float(ad_valores[1])
+                total = ref_count + alt_count
+                if total > 0:
+                    vaf = f"{(alt_count / total) * 100:.2f}%"
+        except:
+            pass
             
     return dp, vaf
 
-def filtrar_regras_laboratorio(row):
-    """Filtro Clínico Restrito do Laboratório (Apenas Exônicos válidos e Íntrons 1-5)."""
-    func = str(row.get('Func.refGene', '')).strip()
-    aachange = str(row.get('AAChange.refGene', '')).strip()
-    
-    if func == 'intronic':
-        detalhe = str(row.get('GeneDetail.refGene', '')).strip()
-        if not detalhe or detalhe == '.' or detalhe == 'nan':
-            return False
-        matches = re.findall(r'[c|*]\.[0-9]+([+-])([0-9]+)', detalhe)
-        if not matches:
-            return False
-        for sinal, numero_str in matches:
-            distancia = int(numero_str)
-            if 1 <= distancia <= 5:
+def extrair_subpopulacao(string_pops, chave):
+    if not string_pops or string_pops == '.':
+        return '.'
+    match = re.search(fr'{chave}:([0-9.]+)', str(string_pops))
+    return match.group(1) if match else '.'
+
+def validar_distancia_intronica(hgvs_c):
+    if hgvs_c == '.':
+        return False
+    match = re.search(r'c\.\d+([+-]\d+)', hgvs_c)
+    if match:
+        try:
+            distancia = int(match.group(1))
+            if 1 <= distancia <= 5 or -5 <= distancia <= -1:
                 return True
-        return False
+        except ValueError:
+            pass
+    return False
 
-    if not aachange or aachange == '.' or aachange == 'nan':
-        return False
-        
-    return True
-
-def converter_cancervar(input_txt, output_dir, id_amostra):
-    print(f"📊 Lendo arquivo bruto do CancerVar: {os.path.basename(input_txt)}")
+def converter_cancervar(input_cancervar, output_dir, id_amostra):
+    print(f"\n📂 Processando arquivo do CancerVar: {input_cancervar}")
     
+    # Identifica e carrega o arquivo complementar do ANNOVAR (.txt bruto) para fazer o cruzamento
+    input_annovar = input_cancervar.replace('.txt.cancervar', '')
+    if not os.path.exists(input_annovar) and input_cancervar.endswith('.cancervar'):
+        input_annovar = input_cancervar[:-10]
+        
+    df_annovar = None
+    if os.path.exists(input_annovar):
+        print(f"🔗 [SUCESSO] Arquivo ANNOVAR localizado para cruzamento e resgate do DP/VAF: {input_annovar}")
+        try:
+            df_annovar = pd.read_csv(input_annovar, sep='\t', low_memory=False)
+            df_annovar.columns = [c.lstrip('#').strip() for c in df_annovar.columns]
+        except Exception as e:
+            print(f"⚠️ Erro ao ler arquivo do ANNOVAR: {e}")
+    else:
+        print(f"❌ [ERRO DE CAMINHO] Não achei o arquivo complementar do ANNOVAR em: {input_annovar}")
+
     try:
-        df = pd.read_csv(input_txt, sep='\t', low_memory=False)
-        
-        if df.iloc[0, 1] == 'Start':
-            df = df.drop(df.index[0]).reset_index(drop=True)
-            
-        df.columns = [c.strip() for c in df.columns]
-        
-        # 1. Aplicação do Filtro do Laboratório (Remove ncRNAs e UTRs sem impacto)
-        df = df[df.apply(filtrar_regras_laboratorio, axis=1)].reset_index(drop=True)
-
-        if len(df) == 0:
-            print("⚠️ Aviso: Nenhuma variante restou após os filtros de região.")
-            return
-
-        # 2. Ajuste de Múltiplos Transcritos
-        for col_aachange in ['AAChange.refGene', 'AAChange.ensGene', 'AAChange.knownGene']:
-            if col_aachange in df.columns:
-                df[col_aachange] = df[col_aachange].astype(str).apply(
-                    lambda x: x.split(',')[0] if x and x != '.' and x != 'nan' else x
-                )
-        
-        if df.columns[0].startswith('CancerVar:'):
-            df.rename(columns={df.columns[0]: 'Interpretation_Details'}, inplace=True)
-
-        # 3. Extração Automática de HGVS
-        if 'AAChange.refGene' in df.columns:
-            hgvs_extraido = df.apply(lambda row: extrair_hgvs(row, 'AAChange.refGene'), axis=1)
-            df['HGVS_cDNA'] = [h[0] for h in hgvs_extraido]
-            df['HGVS_Protein'] = [h[1] for h in hgvs_extraido]
-        else:
-            df['HGVS_cDNA'] = '.'
-            df['HGVS_Protein'] = '.'
-
-        def preencher_hgvs_intron(row):
-            if row['HGVS_cDNA'] == '.' and row['Func.refGene'] == 'intronic':
-                detalhe = str(row.get('GeneDetail.refGene', ''))
-                match = re.search(r'(c\.[^,:\s]+)', detalhe)
-                if match:
-                    return match.group(1)
-            return row['HGVS_cDNA']
-        df['HGVS_cDNA'] = df.apply(preencher_hgvs_intron, axis=1)
-
-        # ------------------------------------------------------------------
-        # AJUSTE EXATO: EXTRAÇÃO VIA PAR CHAVE-VALOR DO CANCERVAR
-        # ------------------------------------------------------------------
-        print("📈 Extraindo Depth e VAF pareando as colunas Otherinfo...")
-        metricas = df.apply(extrair_vaf_e_depth, axis=1)
-        df['Depth_Coverage'] = [m[0] for m in metricas]
-        df['VAF'] = [m[1] for m in metricas]
-        # ------------------------------------------------------------------
-
-        if 'Interpretation_Details' in df.columns:
-            df['CancerVar_Classification'] = df['Interpretation_Details'].astype(str).apply(
-                lambda x: x.split('Link:')[0].strip() if 'Link:' in x else x.strip()
-            )
-        else:
-            df['CancerVar_Classification'] = 'Não Classificado'
-
+        df = pd.read_csv(input_cancervar, sep='\t', low_memory=False)
     except Exception as e:
-        print(f"❌ Erro ao ler e processar o arquivo: {e}")
+        print(f"Erro ao ler CancerVar: {e}")
         return
 
-    # Garante a remoção completa de todas as colunas "Otherinfo" originais e poluídas
-    colunas_finais = [c for c in df.columns if not str(c).startswith('Otherinfo')]
+    df.columns = [c.lstrip('#').strip() for c in df.columns]
+    linhas_processadas = []
+    cont_sucesso_vaf = 0
 
-    colunas_para_o_inicio = [
-        'Chr', 'Start', 'End', 'Ref', 'Alt', 
-        'Gene.refGene', 'Func.refGene', 'GeneDetail.refGene', 'ExonicFunc.refGene', 'AAChange.refGene',
-        'HGVS_cDNA', 'HGVS_Protein', 'Depth_Coverage', 'VAF', 'CancerVar_Classification'
-    ]
-    
-    colunas_para_o_inicio = [c for c in colunas_para_o_inicio if c in colunas_finais]
-    outras_colunas = [c for c in colunas_finais if c not in colunas_para_o_inicio]
-    df_reorganizado = df[colunas_para_o_inicio + outras_colunas]
+    for _, row in df.iterrows():
+        chr_val = str(row.get('Chr', '')).strip()
+        start_val = str(row.get('Start', '')).strip()
+        ref_val = str(row.get('Ref', '')).strip()
+        alt_val = str(row.get('Alt', '')).strip()
+        
+        if not chr_val or chr_val in ['.', '', 'nan'] or 'Chr' in chr_val:
+            continue
+            
+        func_ref = str(row.get('Func.refGene', '')).strip()
+        exonic_func = str(row.get('ExonicFunc.refGene', '')).strip()
+        
+        # Filtros Biológicos do laboratório
+        if 'UTR3' in func_ref or 'UTR5' in func_ref:
+            continue
+        if 'ncRNA_intronic' in func_ref or 'ncRNA_exonic' in func_ref:
+            continue
+        if exonic_func == 'synonymous SNV':
+            continue
+
+        c_dot, p_dot = extrair_hgvs(row, 'AAChange.refGene')
+        
+        if func_ref == 'intronic' and not validar_distancia_intronica(c_dot):
+            continue
+
+        aachange_bruto = str(row.get('AAChange.refGene', '.'))
+        aachange_canonico = aachange_bruto.split(',')[0] if aachange_bruto != '.' else '.'
+
+        # CRUZAMENTO DAS TABELAS VIA COORDENADAS GENÔMICAS
+        depth, vaf = '.', '.'
+        if df_annovar is not None:
+            c_search = chr_val.lower().replace('chr', '')
+            
+            col_chr = [c for c in df_annovar.columns if 'chr' in c.lower()][0]
+            col_start = [c for c in df_annovar.columns if 'start' in c.lower()][0]
+            col_ref = [c for c in df_annovar.columns if 'ref' in c.lower() and 'gene' not in c.lower()][0]
+            col_alt = [c for c in df_annovar.columns if 'alt' in c.lower()][0]
+            
+            match_row = df_annovar[
+                (df_annovar[col_chr].astype(str).str.lower().str.replace('chr', '') == c_search) &
+                (df_annovar[col_start].astype(str) == start_val) &
+                (df_annovar[col_ref].astype(str).str.upper() == ref_val.upper()) &
+                (df_annovar[col_alt].astype(str).str.upper() == alt_val.upper())
+            ]
+            
+            if not match_row.empty:
+                depth, vaf = extrair_vaf_e_depth_original(match_row.iloc[0])
+
+        if depth != '.' and vaf != '.':
+            cont_sucesso_vaf += 1
+        
+        # Limpezas e padronizações clínicas
+        clinvar_raw = str(row.get('clinvar: Clinvar', row.get('clinvar', '.')))
+        clinvar_limpo = clinvar_raw.replace('clinvar:', '').strip()
+        if clinvar_limpo in ['UNK', '', 'nan', 'None']: clinvar_limpo = '.'
+
+        classificacao_raw = str(row.get('Interp_Prediction', row.get('CancerVar: CancerVar and Evidence', 'Não Classificado')))
+        classificacao_somatica_limpa = re.sub(r'^\d+#', '', classificacao_raw).split('EVS=')[0].replace('_', ' ').strip()
+        if classificacao_somatica_limpa in ['.', 'nan', '']: classificacao_somatica_limpa = 'Não Classificado'
+
+        pops_gnomad = row.get('Freq_gnomAD_genome_POPs', '.')
+
+        # Montagem das colunas finais (Germline_Classification e Mutation_Type foram removidas daqui)
+        dados_variante = {
+            'Chr': chr_val, 'Start': start_val, 'End': row.get('End', '.'), 'Ref': ref_val, 'Alt': alt_val,
+            'Gene.refGene': row.get('Ref.Gene', row.get('Gene.refGene', '.')), 'Func.refGene': func_ref,
+            'ExonicFunc.refGene': exonic_func, 'AAChange.refGene': aachange_canonico, 'HGVS_cDNA': c_dot,
+            'HGVS_Protein': p_dot, 'Depth_Coverage': depth, 'VAF': vaf, 'CancerVar_Classification': classificacao_somatica_limpa,
+            'ClinVar_Classification': clinvar_limpo, 
+            'esp6500siv2_all': row.get('esp6500siv2_all', '.'), '1000g2015aug_all': row.get('1000g2015aug_all', '.'),
+            'ExAC_ALL': row.get('Freq_ExAC_ALL', '.'), 'ExAC_AFR': extrair_subpopulacao(pops_gnomad, 'AFR'),
+            'ExAC_AMR': extrair_subpopulacao(pops_gnomad, 'AMR'), 'ExAC_EAS': extrair_subpopulacao(pops_gnomad, 'EAS'),
+            'ExAC_FIN': extrair_subpopulacao(pops_gnomad, 'FIN'), 'ExAC_NFE': extrair_subpopulacao(pops_gnomad, 'NFE'),
+            'ExAC_OTH': extrair_subpopulacao(pops_gnomad, 'OTH'), 'ExAC_SAS': row.get('ExAC_SAS', '.'),
+            'avsnp147': row.get('avsnp147', '.'), 'SIFT_score': row.get('SIFT_score', '.'), 'SIFT_pred': row.get('SIFT_pred', '.'),
+            'Polyphen2_HDIV_score': row.get('Polyphen2_HDIV_score', '.'), 'Polyphen2_HDIV_pred': row.get('Polyphen2_HDIV_pred', '.'),
+            'Polyphen2_HVAR_score': row.get('Polyphen2_HVAR_score', '.'), 'Polyphen2_HVAR_pred': row.get('Polyphen2_HVAR_pred', '.'),
+            'LRT_score': row.get('LRT_score', '.'), 'LRT_pred': row.get('LRT_pred', '.'), 'MutationTaster_score': row.get('MutationTaster_score', '.'),
+            'MutationTaster_pred': row.get('MutationTaster_pred', '.'), 'MutationAssessor_score': row.get('MutationAssessor_score', '.'),
+            'MutationAssessor_pred': row.get('MutationAssessor_pred', '.'), 'FATHMM_score': row.get('FATHMM_score', '.'),
+            'FATHMM_pred': row.get('FATHMM_pred', '.'), 'PROVEAN_score': row.get('PROVEAN_score', '.'), 'PROVEAN_pred': row.get('PROVEAN_pred', '.'),
+            'VEST3_score': row.get('VEST3_score', '.'), 'CADD_raw': row.get('CADD_raw', '.'), 'CADD_phred': row.get('CADD_phred', '.'),
+            'DANN_score': row.get('DANN_score', '.'), 'fathmm-MKL_coding_score': row.get('fathmm-MKL_coding_score', '.'),
+            'fathmm-MKL_coding_pred': row.get('fathmm-MKL_coding_pred', '.'), 'MetaSVM_score': row.get('MetaSVM_score', '.'),
+            'MetaSVM_pred': row.get('MetaSVM_pred', '.'), 'MetaLR_score': row.get('MetaLR_score', '.'), 'MetaLR_pred': row.get('MetaLR_pred', '.'),
+            'integrated_fitCons_score': row.get('integrated_fitCons_score', '.'), 'integrated_confidence_value': row.get('integrated_confidence_value', '.'),
+            'GERP++_RS': row.get('GERP++_RS', '.'), 'phyloP7way_vertebrate': row.get('phyloP7way_vertebrate', '.'),
+            'phyloP20way_mammalian': row.get('phyloP20way_mammalian', '.'), 'phastCons7way_vertebrate': row.get('phastCons7way_vertebrate', '.'),
+            'phastCons20way_mammalian': row.get('phastCons20way_mammalian', '.'), 'SiPhy_29way_logOdds': row.get('SiPhy_29way_logOdds', '.'),
+            'dbscSNV_ADA_SCORE': row.get('dbscSNV_ADA_SCORE', '.'), 'dbscSNV_RF_SCORE': row.get('dbscSNV_RF_SCORE', '.'),
+            'dbnsfp31a_interpro': row.get('Interpro_domain', '.'), 'CLNALLELEID': row.get('CLNALLELEID', '.'), 'CLNDN': row.get('CLNDN', '.'),
+            'CLNDISDB': row.get('CLNDISDB', '.'), 'CLNREVSTAT': row.get('CLNREVSTAT', '.'), 'CLNSIG': row.get('CLNSIG', '.'),
+            'cosmic104': row.get('cosmic91', '.'), 'icgc28': row.get('icgc28', '.'), 'gnomAD_genome_ALL': row.get('Freq_gnomAD_genome_ALL', '.'),
+            'gnomAD_genome_AFR': extrair_subpopulacao(pops_gnomad, 'AFR'), 'gnomAD_genome_AMR': extrair_subpopulacao(pops_gnomad, 'AMR'),
+            'gnomAD_genome_ASJ': extrair_subpopulacao(pops_gnomad, 'ASJ'), 'gnomAD_genome_EAS': extrair_subpopulacao(pops_gnomad, 'EAS'),
+            'gnomAD_genome_FIN': extrair_subpopulacao(pops_gnomad, 'FIN'), 'gnomAD_genome_NFE': extrair_subpopulacao(pops_gnomad, 'NFE'),
+            'gnomAD_genome_OTH': extrair_subpopulacao(pops_gnomad, 'OTH')
+        }
+        linhas_processadas.append(dados_variante)
+
+    print(f"📊 Total de variantes recuperadas com Depth/VAF: {cont_sucesso_vaf} de {len(linhas_processadas)}")
+
+    if not linhas_processadas:
+        print("⚠️ Alerta: Nenhuma variante atendeu aos critérios estritos de filtragem biológica.")
+        return
+
+    df_final = pd.DataFrame(linhas_processadas)
+    colunas_ordenadas = list(dados_variante.keys())
+    df_reorganizado = df_final[colunas_ordenadas]
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -215,24 +273,18 @@ def converter_cancervar(input_txt, output_dir, id_amostra):
     df_reorganizado.to_csv(csv_out, index=False, sep=';')
     with pd.ExcelWriter(xlsx_out, engine='openpyxl') as writer:
         df_reorganizado.to_excel(writer, index=False, sheet_name='Variantes_Somáticas')
-    print(f"✅ Sucesso absoluto! Nova Planilha Excel gerada com Cobertura e VAF em: {xlsx_out}")
+        
+    print(f"✅ Relatório criado com sucesso em: {xlsx_out}")
 
 if __name__ == "__main__":
     if len(sys.argv) == 4:
-        input_file = sys.argv[1]
-        output_dir = sys.argv[2]
-        id_amostra = sys.argv[3]
-        converter_cancervar(input_file, output_dir, id_amostra)
+        converter_cancervar(sys.argv[1], sys.argv[2], sys.argv[3])
     else:
         pasta_anotacao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/05_anotacao"
-        padrao_busca = os.path.join(pasta_anotacao, "*cancervar.output.hg38_multianno.txt")
+        padrao_busca = os.path.join(pasta_anotacao, "*cancervar.output.hg38_multianno.txt.cancervar")
         arquivos_encontrados = glob.glob(padrao_busca)
-        
         if arquivos_encontrados:
             input_padrao = arquivos_encontrados[0]
-            nome_arquivo = os.path.basename(input_padrao)
-            id_amostra_padrao = nome_arquivo.split('_cancervar')[0]
-            dir_out_padrao = os.path.join("/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/06_relatorios_finais", id_amostra_padrao)
-            converter_cancervar(input_padrao, dir_out_padrao, id_amostra_padrao)
-        else:
-            print(f"⚠️ Nenhum arquivo de anotação localizado.")
+            id_amostra_padrao = os.path.basename(input_padrao).split('_cancervar')[0]
+            output_dir_padrao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/06_relatorios_finais"
+            converter_cancervar(input_padrao, output_dir_padrao, id_amostra_padrao)
