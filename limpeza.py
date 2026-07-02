@@ -54,4 +54,3 @@ if __name__ == "__main__":
         realizar_limpeza(sys.argv[1], sys.argv[2])
     else:
         print("Uso: python3 limpeza.py R1.fastq.gz R2.fastq.gz")
-        
