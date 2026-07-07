@@ -25,23 +25,17 @@ def extrair_hgvs(row, coluna_fonte):
     return c_dot, p_dot
 
 def extrair_vaf_e_depth_original(row_annovar):
-    """
-    Sua função original que funciona perfeitamente:
-    Varre cirurgicamente as colunas nominais de 'Otherinfo' do arquivo do ANNOVAR.
-    """
+    """Varre as colunas de 'Otherinfo' do arquivo do ANNOVAR para obter profundidade e VAF."""
     formato = ""
     valores = ""
     
-    # 1. Identifica quais colunas do DataFrame começam com 'Otherinfo'
     colunas_otherinfo = [c for c in row_annovar.index if str(c).startswith('Otherinfo')]
     
-    # Ordena as colunas numericamente (Otherinfo1, Otherinfo2...)
     def extrair_numero(nome_col):
         num = re.findall(r'\d+', nome_col)
         return int(num[0]) if num else 0
     colunas_otherinfo.sort(key=extrair_numero)
     
-    # 2. Procura pela coluna que dita o formato (contém 'GT:')
     for idx, col in enumerate(colunas_otherinfo):
         conteudo = str(row_annovar[col]).strip()
         if conteudo.startswith("GT:") or ":GT:" in conteudo or conteudo == "GT":
@@ -50,7 +44,6 @@ def extrair_vaf_e_depth_original(row_annovar):
                 valores = str(row_annovar[colunas_otherinfo[idx + 1]]).strip()
             break
             
-    # Fallback linear por conteúdo da linha
     if not formato:
         valores_linha = [str(x).strip() for x in row_annovar.values]
         for i, celula in enumerate(valores_linha):
@@ -70,7 +63,6 @@ def extrair_vaf_e_depth_original(row_annovar):
     dp = '.'
     vaf = '.'
     
-    # Extração da Cobertura Total (DP)
     if 'DP' in mapa and mapa['DP'] != '.':
         dp = mapa['DP']
     elif 'AD' in mapa and mapa['AD'] != '.':
@@ -80,7 +72,6 @@ def extrair_vaf_e_depth_original(row_annovar):
         except:
             pass
             
-    # Extração da Frequência Alélica / VAF
     coluna_af = 'AF' if 'AF' in mapa else ('VF' if 'VF' in mapa else None)
     if coluna_af and mapa[coluna_af] != '.':
         try:
@@ -128,14 +119,14 @@ def validar_distancia_intronica(hgvs_c):
 def converter_cancervar(input_cancervar, output_dir, id_amostra):
     print(f"\n📂 Processando arquivo do CancerVar: {input_cancervar}")
     
-    # Identifica e carrega o arquivo complementar do ANNOVAR (.txt bruto) para fazer o cruzamento
-    input_annovar = input_cancervar.replace('.txt.cancervar', '')
+    # AJUSTE CORRETO: Remove a extensão '.cancervar' para encontrar o ANNOVAR gerado no orquestrador
+    input_annovar = input_cancervar.replace('.txt.cancervar', '.txt')
     if not os.path.exists(input_annovar) and input_cancervar.endswith('.cancervar'):
-        input_annovar = input_cancervar[:-10]
+        input_annovar = input_cancervar[:-10] # Remove os 10 caracteres correspondentes a '.cancervar'
         
     df_annovar = None
     if os.path.exists(input_annovar):
-        print(f"🔗 [SUCESSO] Arquivo ANNOVAR localizado para cruzamento e resgate do DP/VAF: {input_annovar}")
+        print(f"🔗 [SUCESSO] Arquivo ANNOVAR localizado para cruzamento: {input_annovar}")
         try:
             df_annovar = pd.read_csv(input_annovar, sep='\t', low_memory=False)
             df_annovar.columns = [c.lstrip('#').strip() for c in df_annovar.columns]
@@ -151,6 +142,28 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
         return
 
     df.columns = [c.lstrip('#').strip() for c in df.columns]
+    
+    # ==============================================================================
+    # MAPEAMENTO PRÉVIO DE MNVs PARA DEDUPLICAÇÃO
+    # ==============================================================================
+    posicoes_a_ignorar = set()
+    for _, row in df.iterrows():
+        chr_val = str(row.get('Chr', '')).strip()
+        start_val = str(row.get('Start', '')).strip()
+        ref_val = str(row.get('Ref', '')).strip()
+        alt_val = str(row.get('Alt', '')).strip()
+        
+        if not chr_val or chr_val in ['.', '', 'nan'] or 'Chr' in chr_val:
+            continue
+
+        if len(ref_val) > 1 and len(ref_val) == len(alt_val) and '-' not in ref_val and '-' not in alt_val:
+            try:
+                start_num = int(float(start_val))
+                for i in range(len(ref_val)):
+                    posicoes_a_ignorar.add((chr_val, str(start_num + i)))
+            except ValueError:
+                pass
+
     linhas_processadas = []
     cont_sucesso_vaf = 0
 
@@ -161,6 +174,10 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
         alt_val = str(row.get('Alt', '')).strip()
         
         if not chr_val or chr_val in ['.', '', 'nan'] or 'Chr' in chr_val:
+            continue
+            
+        # FILTRO ATIVO PARA ELIMINAR AS SNVs FRAGMENTADAS REDUNDANTES
+        if len(ref_val) == 1 and (chr_val, start_val) in posicoes_a_ignorar:
             continue
             
         func_ref = str(row.get('Func.refGene', '')).strip()
@@ -182,24 +199,43 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
         aachange_bruto = str(row.get('AAChange.refGene', '.'))
         aachange_canonico = aachange_bruto.split(',')[0] if aachange_bruto != '.' else '.'
 
-        # CRUZAMENTO DAS TABELAS VIA COORDENADAS GENÔMICAS
+        # ==============================================================================
+        # AJUSTE ROBUSTO INTERVALAR: HERANÇA POR COORDENADA START (MNVs INTEGRADAS)
+        # ==============================================================================
         depth, vaf = '.', '.'
         if df_annovar is not None:
-            c_search = chr_val.lower().replace('chr', '')
+            def normalizar_valor(v):
+                s = str(v).strip().lower().replace('chr', '')
+                if s.endswith('.0'):
+                    s = s[:-2]
+                return s
+
+            c_search = normalizar_valor(chr_val)
+            ref_search = normalizar_valor(ref_val).upper()
+            alt_search = normalizar_valor(alt_val).upper()
             
             col_chr = [c for c in df_annovar.columns if 'chr' in c.lower()][0]
             col_start = [c for c in df_annovar.columns if 'start' in c.lower()][0]
             col_ref = [c for c in df_annovar.columns if 'ref' in c.lower() and 'gene' not in c.lower()][0]
             col_alt = [c for c in df_annovar.columns if 'alt' in c.lower()][0]
             
+            # Etapa 1: Tentativa de Casamento Perfeito
             match_row = df_annovar[
-                (df_annovar[col_chr].astype(str).str.lower().str.replace('chr', '') == c_search) &
-                (df_annovar[col_start].astype(str) == start_val) &
-                (df_annovar[col_ref].astype(str).str.upper() == ref_val.upper()) &
-                (df_annovar[col_alt].astype(str).str.upper() == alt_val.upper())
+                (df_annovar[col_chr].apply(normalizar_valor) == c_search) &
+                (df_annovar[col_start].apply(normalizar_valor) == normalizar_valor(start_val)) &
+                (df_annovar[col_ref].apply(normalizar_valor).str.upper() == ref_search) &
+                (df_annovar[col_alt].apply(normalizar_valor).str.upper() == alt_search)
             ]
             
-            if not match_row.empty:
+            # Etapa 2: Se falhar (MNVs unificadas), herda os dados da primeira base (coordenada Start)
+            if match_row.empty:
+                match_posicao_start = df_annovar[
+                    (df_annovar[col_chr].apply(normalizar_valor) == c_search) &
+                    (df_annovar[col_start].apply(normalizar_valor) == normalizar_valor(start_val))
+                ]
+                if not match_posicao_start.empty:
+                    depth, vaf = extrair_vaf_e_depth_original(match_posicao_start.iloc[0])
+            else:
                 depth, vaf = extrair_vaf_e_depth_original(match_row.iloc[0])
 
         if depth != '.' and vaf != '.':
@@ -216,7 +252,6 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
 
         pops_gnomad = row.get('Freq_gnomAD_genome_POPs', '.')
 
-        # Montagem das colunas finais (Germline_Classification e Mutation_Type foram removidas daqui)
         dados_variante = {
             'Chr': chr_val, 'Start': start_val, 'End': row.get('End', '.'), 'Ref': ref_val, 'Alt': alt_val,
             'Gene.refGene': row.get('Ref.Gene', row.get('Gene.refGene', '.')), 'Func.refGene': func_ref,
@@ -270,7 +305,7 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
     csv_out = os.path.join(output_dir, f"{id_amostra}_relatorio_final.csv")
     xlsx_out = os.path.join(output_dir, f"{id_amostra}_relatorio_final.xlsx")
 
-    df_reorganizado.to_csv(csv_out, index=False, sep=';')
+    df_reorganizado.to_csv(csv_out, index=False, sep= ';')
     with pd.ExcelWriter(xlsx_out, engine='openpyxl') as writer:
         df_reorganizado.to_excel(writer, index=False, sheet_name='Variantes_Somáticas')
         
@@ -280,11 +315,16 @@ if __name__ == "__main__":
     if len(sys.argv) == 4:
         converter_cancervar(sys.argv[1], sys.argv[2], sys.argv[3])
     else:
+        # Configuração para execução local/manual direta na pasta de anotação
         pasta_anotacao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/05_anotacao"
-        padrao_busca = os.path.join(pasta_anotacao, "*cancervar.output.hg38_multianno.txt.cancervar")
+        padrao_busca = os.path.join(pasta_anotacao, "*_cancervar.output.hg38_multianno.txt.cancervar")
         arquivos_encontrados = glob.glob(padrao_busca)
+        
         if arquivos_encontrados:
             input_padrao = arquivos_encontrados[0]
+            # Coleta o nome base da amostra de forma correta (ex: 1204)
             id_amostra_padrao = os.path.basename(input_padrao).split('_cancervar')[0]
             output_dir_padrao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/06_relatorios_finais"
             converter_cancervar(input_padrao, output_dir_padrao, id_amostra_padrao)
+        else:
+            print("❌ Nenhum arquivo .cancervar correspondente ao padrão foi localizado.")
