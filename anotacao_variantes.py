@@ -1,5 +1,55 @@
 import os
 import subprocess
+import pandas as pd
+import re
+
+def pre_filtrar_tabela_annovar(caminho_txt):
+    """
+    Filtra o arquivo gerado pelo ANNOVAR mantendo apenas variantes exônicas 
+    e de splicing de interesse, descartando UTRs, íntrons profundos e sinônimas.
+    """
+    print("🧹 [Pré-Filtro] Limpando variantes intrônicas e UTRs para acelerar o CancerVar...")
+    
+    # Lê a tabela do ANNOVAR
+    df = pd.read_csv(caminho_txt, sep='\t', low_memory=False)
+    df.columns = [c.lstrip('#').strip() for c in df.columns]
+    
+    def validar_distancia_intronica(aachange):
+        val = str(aachange)
+        if not val or val == '.' or val == 'nan': 
+            return False
+        primeiro = val.split(',')[0]
+        match = re.search(r'c\.\d+([+-]\d+)', primeiro)
+        if match:
+            try:
+                dist = int(match.group(1))
+                return 1 <= dist <= 5 or -5 <= dist <= -1
+            except ValueError: 
+                pass
+        return False
+
+    linhas_filtradas = []
+    for idx, row in df.iterrows():
+        func_ref = str(row.get('Func.refGene', '')).strip()
+        exonic_func = str(row.get('ExonicFunc.refGene', '')).strip()
+        aa_change = str(row.get('AAChange.refGene', '')).strip()
+        
+        # Filtros biológicos idênticos aos do conversor final
+        if 'UTR3' in func_ref or 'UTR5' in func_ref: 
+            continue
+        if 'ncRNA_intronic' in func_ref or 'ncRNA_exonic' in func_ref: 
+            continue
+        if exonic_func == 'synonymous SNV': 
+            continue
+        if func_ref == 'intronic' and not validar_distancia_intronica(aa_change): 
+            continue
+        
+        linhas_filtradas.append(row)
+        
+    # Recria o arquivo .txt substituindo pelo conteúdo filtrado
+    df_filtrado = pd.DataFrame(linhas_filtradas)
+    df_filtrado.to_csv(caminho_txt, sep='\t', index=False)
+    print(f"降低 Tabela enxugada de {len(df)} para {len(df_filtrado)} variantes de interesse somático.")
 
 def rodar_anotacao(id_amostra, vcf_entrada, pasta_saida, cancervar_py, cancervar_config):
     """
@@ -52,6 +102,12 @@ def rodar_anotacao(id_amostra, vcf_entrada, pasta_saida, cancervar_py, cancervar
     except Exception as e:
         print(f"❌ Erro crítico ao executar o ANNOVAR: {e}")
         return False
+
+    # ==========================================
+    # PASSO INTERMEDIÁRIO: Filtragem da Tabela ANNOVAR
+    # ==========================================
+    if os.path.exists(tabela_annovar_txt):
+        pre_filtrar_tabela_annovar(tabela_annovar_txt)
 
     # ==========================================
     # PASSO 2: Predição Dinâmica do CancerVar
