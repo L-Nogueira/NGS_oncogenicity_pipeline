@@ -1,8 +1,30 @@
+# 0. Movendo os vcf de dentro da pasta do dragen para a pasta 04_variantes
+find . -type f -name "*.hard-filtered.vcf.gz"
+
+find . -type f -name "*.hard-filtered.vcf.gz" -exec mv -t /home/bioinfo/laboratorio_bioinfo/projetos_miseq_real/04_variantes {} +
+
+# 0.1 descompactando todos os vcf.gz para vcf
+cd /home/bioinfo/laboratorio_bioinfo/projetos_miseq_real/04_variantes
+gunzip *.gz
+
 # 1. Garanta que está no diretório do projeto real
 cd ~/laboratorio_bioinfo/projetos_miseq_real
 
 # 2. Ative o ambiente conda
 conda activate bioinfo_vc
 
-# 3. Dispare o orquestrador chamando o caminho dele
+# 3.1 Dispare o orquestrador em loop e single thread
 python3 ../scripts_bioinfo/orquestrador.py
+
+RODANDO EM MULTI THREAD
+# 3.2 Gera a lista de amostras que entraram como fastQ e passaram pelo mutect2 
+ls 04_variantes/*_variants.vcf | xargs -n 1 basename | sed 's/_variants.vcf//' > lista_amostras.txt
+
+# 3.3 Gera a lista de amostras que entraram como VCF vindo direto do dragen
+ls 04_variantes/*.hard-filtered.vcf | xargs -n 1 basename | sed 's/\.hard-filtered\.vcf//' > lista_amostras.txt
+
+# 3.4 Verifica a lista de amostras
+cat lista_amostras.txt
+
+# 4. Executa o parallel limitando a 2 jobs concorrentes (-j 2)
+parallel -j 2 --bar --joblog progresso_pipeline.log python3 /home/bioinfo/laboratorio_bioinfo/scripts_bioinfo/orquestrador.py {} :::: lista_amostras.txt
