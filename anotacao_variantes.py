@@ -72,19 +72,24 @@ def rodar_anotacao(id_amostra, vcf_entrada, pasta_saida, cancervar_py, cancervar
     print(f"🧬 [Anotação] Iniciando processo para a amostra: {id_amostra}")
 
     # ==========================================
-    # PASSO 1: ANNOVAR Adaptado (Gera a estrutura enxuta em segundos)
+    # PASSO 1: ANNOVAR 
     # ==========================================
     # Ajustado o output para o padrão que o CancerVar espera receber e pular buscas pesadas
     cmd_annovar = (
-        f"perl {TABLE_ANNOVAR} {os.path.abspath(vcf_entrada)} {HUMANDB} "
-        f"-buildver hg38 -outfile {prefixo_saida} -remove "
-        f"-protocol refGene,clinvar_20240917,cosmic91 -operation g,f,f "
-        f"-nastring . -vcfinput"
+        f"perl {TABLE_ANNOVAR} "
+	f"{os.path.abspath(vcf_entrada)} "
+	f" {HUMANDB} "
+        f"-buildver hg38 "
+	f"-outfile {prefixo_saida} "
+	f"-remove "
+        f"-protocol refGene,clinvar_20240917,cosmic91 "
+	f"-operation g,f,f "
+        f"-nastring . "
+	f"-vcfinput "
     )
 
     try:
-        # Checagem inteligente: se o arquivo final do CancerVar já existe, 
-        # o ANNOVAR inicial também pode ser pulado com segurança total.
+        # Alteração: Ajustado o caminho para buscar o arquivo final na subpasta correta
         arquivo_cancervar_saida_abs = os.path.join(pasta_saida_abs, f"{id_amostra}_cancervar.output")
         cancervar_final_txt = arquivo_cancervar_saida_abs + ".hg38_multianno.txt.cancervar"
 
@@ -96,7 +101,7 @@ def rodar_anotacao(id_amostra, vcf_entrada, pasta_saida, cancervar_py, cancervar
             else:
                 print("⏭️  [Passo 1/2] Arquivo base do ANNOVAR já localizado.")
         else:
-            print("⏭️  [SKIP GLOBAL] Todos os outputs de Anotação/CancerVar já existem para esta amostra.")
+            print("⏭️  [SKIP GLOBAL] Todos os outputs de Anotação/CancerVar já existem nesta subpasta.")
             return True
 
     except Exception as e:
