@@ -13,25 +13,31 @@ import variantes_mutect2
 import anotacao_variantes
 
 # ======================================================================
-# --- CONFIGURAÇÃO DE CAMINHOS E EXECUTÁVEIS ---
+# --- CONFIGURAÇÃO DE CAMINHOS E EXECUTÁVEIS (PORTABILIDADE) ---
 # ======================================================================
+
+# Captura dinamicamente a Home do usuário:
+HOME = os.path.expanduser("~")
+
+#Caminhos de diretórios internos
 PASTA_BRUTOS = "dados_brutos"
-REFERENCIA = os.path.expanduser("~/laboratorio_bioinfo/genomas_referencia/Homo_sapiens.GRCh38.dna.primary_assembly.fa")
 PASTA_VARIANTES = "04_variantes"
 PASTA_ANOTACAO = "05_anotacao" 
 
-# Arquivos e caminhos de suporte - Alterado para compatibilidade nativa com a automação
-ARQUIVO_BED = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/arquivo .bed/targeted_regions_FIXED.bed"
-ANNOVAR_DIR = "/home/l.nogueira/laboratorio_bioinfo/softwares/annovar"
+# Genoma de Referência
+REFERENCIA = os.path.join(HOME, "laboratorio_bioinfo", "genomas_referencia", "Homo_sapiens.GRCh38.dna.primary_assembly.fa")
 
-# CANCERVAR ATIVO
-CANCERVAR_DIR = "/home/l.nogueira/laboratorio_bioinfo/softwares/CancerVar"
+# BED
+ARQUIVO_BED = os.path.join(HOME, "laboratorio_bioinfo", "projetos_miseq_real", "arquivo .bed", "targeted_regions_FIXED.bed")
+
+# ANNOVAR / CANCERVAR
+ANNOVAR_DIR = os.path.join(HOME, "laboratorio_bioinfo", "softwares", "annovar")
+CANCERVAR_DIR = os.path.join(HOME, "laboratorio_bioinfo", "softwares", "CancerVar")
 CANCERVAR_PY = os.path.join(CANCERVAR_DIR, "CancerVar.py")
 CANCERVAR_CONFIG = os.path.join(CANCERVAR_DIR, "config.ini")
 
-# Caminho do script de conversão amigável (Excel/CSV)
-SCRIPT_CONVERSOR = "/home/l.nogueira/laboratorio_bioinfo/scripts_bioinfo/converter_output.py"
-
+# Caminho do script de conversão (Excel/CSV)
+SCRIPT_CONVERSOR = os.path.join(HOME, "laboratorio_bioinfo", "scripts_bioinfo", "converter_output.py")
 # ======================================================================
 
 def executar_script(comando):
@@ -64,33 +70,43 @@ if __name__ == "__main__":
     os.makedirs(PASTA_VARIANTES, exist_ok=True)
     os.makedirs(PASTA_ANOTACAO, exist_ok=True)
 
-# Identificar todas as amostras possíveis combinando FastQs existentes E VCFs já presentes
-    vcf_mutect_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*_variants.vcf"))
-    vcf_dragen_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*.hard-filtered.vcf"))
-    arquivos_r1 = glob.glob(os.path.join(PASTA_BRUTOS, "*_R1_*.fastq.gz"))
-    
-    # Conjunto de IDs únicos encontrados no sistema
-    ids_amostras = set()
-    
-    for vcf_path in vcf_mutect_lista:
-        id_vcf = os.path.basename(vcf_path).replace("_variants.vcf", "")
-        ids_amostras.add(id_vcf)
+    # --- NOVIDADE PARA PARALELIZAÇÃO ---
+    # Verifica se o ID da amostra foi passado diretamente como argumento via terminal
+    if len(sys.argv) > 1:
+        ids_amostras = [sys.argv[1]]
+        print(f"🚀 [Modo Paralelo] Executando especificamente a amostra: {ids_amostras[0]}")
+    else:
+        # Se você rodar sem passar argumentos, ele mantém o comportamento antigo de listar tudo
+        print("🧬 [Modo Sequencial] Detectando todas as amostras no sistema...")
+        vcf_mutect_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*_variants.vcf"))
+        vcf_dragen_lista = glob.glob(os.path.join(PASTA_VARIANTES, "*.hard-filtered.vcf"))
+        arquivos_r1 = glob.glob(os.path.join(PASTA_BRUTOS, "*_R1_*.fastq.gz"))
         
-    for vcf_path in vcf_dragen_lista:
-        id_vcf = os.path.basename(vcf_path).replace(".hard-filtered.vcf", "")
-        ids_amostras.add(id_vcf)
+        ids_amostras = set()
         
-    for r1_path in arquivos_r1:
-        ids_amostras.add(obter_id_amostra(r1_path))
-        
-    ids_amostras = sorted(list(ids_amostras))
+        for vcf_path in vcf_mutect_lista:
+            id_vcf = os.path.basename(vcf_path).replace("_variants.vcf", "")
+            ids_amostras.add(id_vcf)
+            
+        for vcf_path in vcf_dragen_lista:
+            id_vcf = os.path.basename(vcf_path).replace(".hard-filtered.vcf", "")
+            ids_amostras.add(id_vcf)
+            
+        for r1_path in arquivos_r1:
+            ids_amostras.add(obter_id_amostra(r1_path))
+            
+        ids_amostras = sorted(list(ids_amostras))
 
     if not ids_amostras:
-        print(f"❌ Erro: Nenhum FastQ em '{PASTA_BRUTOS}' ou VCF em '{PASTA_VARIANTES}' localizado.")
+        print(f"❌ Erro: Nenhuma amostra localizada.")
         sys.exit(1)
 
-    print(f"📦 Total de amostras identificadas para processamento: {len(ids_amostras)}")
+    if len(ids_amostras) > 1:
+        print(f"📦 Total de amostras identificadas para processamento sequencial: {len(ids_amostras)}")
 
+    # ======================================================================
+    # O LOOP ABAIXO SEGUE EXATAMENTE IGUAL AO QUE JÁ ESTAVA FUNCIONANDO
+    # ======================================================================
     for id_amostra in ids_amostras:
         tempo_inicio_amostra = time.time()
         
@@ -98,7 +114,7 @@ if __name__ == "__main__":
         print(f"🔬 PROCESSANDO AMOSTRA: {id_amostra}")
         print(f"{'-'*80}")
 
-# Definir caminhos possíveis para os arquivos VCF desta amostra
+        # Definir caminhos possíveis para os arquivos VCF desta amostra
         vcf_mutect2 = os.path.join(PASTA_VARIANTES, f"{id_amostra}_variants.vcf")
         vcf_dragen = os.path.join(PASTA_VARIANTES, f"{id_amostra}.hard-filtered.vcf")
         
@@ -108,16 +124,15 @@ if __name__ == "__main__":
         elif os.path.exists(vcf_dragen):
             vcf_entrada_real = vcf_dragen
         else:
-            vcf_entrada_real = vcf_mutect2 # Fallback padrão caso venha dos FastQs e vá rodar o Mutect2
+            vcf_entrada_real = vcf_mutect2
 
-        # DEFINIÇÃO DE MODO: Se algum dos dois VCFs já existe, podemos pular as etapas de upstream
+        # DEFINIÇÃO DE MODO: Se algum dos dois VCFs já existe, pula upstream
         if os.path.exists(vcf_mutect2) or os.path.exists(vcf_dragen):
             print(f"ℹ️  Modo VCF Direto detectado para {id_amostra} ({os.path.basename(vcf_entrada_real)} encontrado).")
             print(f"⏩ [SKIP] Passos 1 a 4 ignorados automaticamente.")
         else:
             print(f"ℹ️  Modo FastQ Tradicional detectado para {id_amostra}.")
             
-            # Localizar os arquivos FastQ correspondentes à amostra
             padrao_r1 = os.path.join(PASTA_BRUTOS, f"{id_amostra}_R1_*.fastq.gz")
             busca_r1 = glob.glob(padrao_r1)
             
@@ -168,21 +183,22 @@ if __name__ == "__main__":
                 pasta_saida=PASTA_VARIANTES
             )
 
-# --- PASSO 5: ANNOVAR + CancerVar (Comum para ambos os modos) ---
-        cancervar_final_txt = os.path.join(PASTA_ANOTACAO, f"{id_amostra}_cancervar.output.hg38_multianno.txt.cancervar")
+        # --- PASSO 5: ANNOVAR + CancerVar (Comum para ambos os modos) ---
+        PASTA_ANOTACAO_AMOSTRA = os.path.join(PASTA_ANOTACAO, f"anotacao_{id_amostra}")
+        cancervar_final_txt = os.path.join(PASTA_ANOTACAO_AMOSTRA, f"{id_amostra}_cancervar.output.hg38_multianno.txt.cancervar")
         
         if not os.path.exists(cancervar_final_txt):
             print(f"🏷️ [PASSO 5] Iniciando anotação e predição ANNOVAR + CancerVar...")
             print(f"🔍 Usando como entrada: {os.path.basename(vcf_entrada_real)}")
             anotacao_variantes.rodar_anotacao(
                 id_amostra=id_amostra,
-                vcf_entrada=vcf_entrada_real,  # Mudança crucial aqui!
-                pasta_saida=PASTA_ANOTACAO,
+                vcf_entrada=vcf_entrada_real,
+                pasta_saida=PASTA_ANOTACAO_AMOSTRA,
                 cancervar_py=CANCERVAR_PY,
                 cancervar_config=CANCERVAR_CONFIG
             )
         else:
-            print(f"⏩ [SKIP] Anotação CancerVar já existente para {id_amostra}.")
+            print(f"⏩ [SKIP] Anotação CancerVar já existente em {PASTA_ANOTACAO_AMOSTRA}.")
 
         # --- PASSO 6: Relatórios Clínicos Finais (Excel/CSV) ---
         PASTA_RELATORIOS = "06_relatorios_finais"
@@ -196,10 +212,10 @@ if __name__ == "__main__":
                 cancervar_final_txt_abs = os.path.abspath(cancervar_final_txt)
                 script_conversor_abs = os.path.abspath(SCRIPT_CONVERSOR)
                 
-                comando_conversao = f"python3 \"{script_conversor_abs}\" \"{cancervar_final_txt_abs}\" \"{pasta_destino_amostra_abs}\" \"{id_amostra}\""
+                comando_conversao = f"python3 '{script_conversor_abs}' '{cancervar_final_txt_abs}' '{pasta_destino_amostra_abs}' '{id_amostra}'"
                 executar_script(comando_conversao)
             else:
-                print(f"⚠️ Alerta: Arquivo final .cancervar não localizado para conversão. Verifique logs internos.")
+                print(f"⚠️ Alerta: Arquivo final .cancervar não localizado para conversão em {cancervar_final_txt}.")
         else:
             print(f"⏩ [SKIP] Relatório final em Excel já gerado para {id_amostra}.")
             
