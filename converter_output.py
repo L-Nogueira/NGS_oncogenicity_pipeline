@@ -195,9 +195,15 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
         
         if func_ref == 'intronic' and not validar_distancia_intronica(c_dot):
             continue
-
+        
+        # ====================================================================================================
+        # FILTRO PARA SELECIONAR SOMENTE O PRIMEIRO TRANSCRITO NAS COLUNAS AAChange.refGene E AAChange.ensGene
+        # ====================================================================================================
         aachange_bruto = str(row.get('AAChange.refGene', '.'))
         aachange_canonico = aachange_bruto.split(',')[0] if aachange_bruto != '.' else '.'
+
+        aachange_ens_bruto = str(row.get('AAChange.ensGene', '.'))
+        aachange_ens_canonico = aachange_ens_bruto.split(',')[0] if aachange_ens_bruto and aachange_ens_bruto != '.' else '.'
 
         # ==============================================================================
         # AJUSTE ROBUSTO INTERVALAR: HERANÇA POR COORDENADA START (MNVs INTEGRADAS)
@@ -264,6 +270,7 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
             'AAChange.refGene': aachange_canonico, 
             'HGVS_cDNA': c_dot,
             'HGVS_Protein': p_dot, 
+            'AAChange.ensGene': aachange_ens_canonico,
             'Depth_Coverage': depth, 
             'VAF': vaf, 
             'CancerVar_Classification': classificacao_somatica_limpa,
@@ -292,15 +299,9 @@ def converter_cancervar(input_cancervar, output_dir, id_amostra):
             'MutationTaster_pred': row.get('MutationTaster_pred', 'MutationTaster_pred'), 
             'PROVEAN_score': row.get('dbnsfp30a_PROVEAN_score', row.get('PROVEAN_score', '.')), 
             'PROVEAN_pred': row.get('PROVEAN_pred', 'PROVEAN_pred'),
-            #'Polyphen_HDIV_score': row.get('dbnsfp30a_Polyphen2_HDIV_score', row.get('Polyphen2_HDIV_score', '.')), 
-            #'Polyphen_HDIV_pred': row.get('Polyphen2_HDIV_pred', 'Polyphen2_HDIV_pred'),
-            #'Polyphen_HVAR_score': row.get('dbnsfp30a_Polyphen2_HVAR_score', row.get('Polyphen2_HVAR_score', '.')), 
-            #'Polyphen_HVAR_pred': row.get('Polyphen2_HVAR_pred', 'Polyphen2_HVAR_pred'),
             'VEST3_score': row.get('dbnsfp30a_VEST3_score', row.get('VEST3_score', '.')), 
             'SIFT_score': row.get('dbnsfp30a_SIFT_score', row.get('SIFT_score', '.')), 
             'SIFT_pred': row.get('SIFT_pred', 'SIFT_pred'),
-            #'Likelihood_RatioT_score': row.get('dbnsfp30a_LRT_score', row.get('LRT_score', '.')), 
-            #'Likelihood_RatioT_pred': row.get('LRT_pred', 'LRT_pred'), 
             'MutationAssessor_score': row.get('dbnsfp30a_MutationAssessor_score', row.get('MutationAssessor_score', '.')),
             'MutationAssessor_pred': row.get('MutationAssessor_pred', 'MutationAssessor_pred'), 
             'DANN_score': row.get('dbnsfp30a_DANN_score', row.get('DANN_score', '.'))
@@ -333,16 +334,15 @@ if __name__ == "__main__":
     if len(sys.argv) == 4:
         converter_cancervar(sys.argv[1], sys.argv[2], sys.argv[3])
     else:
-        # Configuração para execução local/manual direta na pasta de anotação
-        pasta_anotacao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/05_anotacao"
-        padrao_busca = os.path.join(pasta_anotacao, "*_cancervar.output.hg38_multianno.txt.cancervar")
-        arquivos_encontrados = glob.glob(padrao_busca)
+        # Alteração: Configuração corrigida para varrer as subpastas criadas usando padrão recursivo
+        pasta_anotacao = os.path.join(os.path.expanduser("~"), "laboratorio_bioinfo", "projetos_miseq_real", "05_anotacao")
+        padrao_busca = os.path.join(pasta_anotacao, "**", "*_cancervar.output.hg38_multianno.txt.cancervar")
+        arquivos_encontrados = glob.glob(padrao_busca, recursive=True)
         
         if arquivos_encontrados:
             input_padrao = arquivos_encontrados[0]
-            # Coleta o nome base da amostra de forma correta (ex: 1204)
             id_amostra_padrao = os.path.basename(input_padrao).split('_cancervar')[0]
             output_dir_padrao = "/home/l.nogueira/laboratorio_bioinfo/projetos_miseq_real/06_relatorios_finais"
             converter_cancervar(input_padrao, output_dir_padrao, id_amostra_padrao)
         else:
-            print("❌ Nenhum arquivo .cancervar correspondente ao padrão foi localizado.")
+            print("❌ Nenhum arquivo .cancervar correspondente ao padrão foi localizado nas subpastas.")
